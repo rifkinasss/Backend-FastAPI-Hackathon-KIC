@@ -103,10 +103,16 @@ def get_analysis(start_date=None, end_date=None):
                     h_derajat_total.append(derajat["Tinggi"])
 
                 crisp_val = (sum(h_derajat_total) / len(h_derajat_total)) * 100 if h_derajat_total else 0
+                sensor_values = {
+                    param.upper(): round(float(h_avg[param]), 2)
+                    for param in available_params
+                    if not pd.isna(h_avg[param])
+                }
 
                 history_list.append({
                     "timestamp": h_time.strftime("%H:%M"),
                     "crisp": round(float(crisp_val), 2),
+                    "parameters": sensor_values,
                     "is_averaged": len(h_window_df) > 1,
                 })
 

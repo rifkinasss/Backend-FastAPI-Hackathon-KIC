@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 
-DATASET_DIR = Path(__file__).resolve().parents[2] / "iot-fuzzy-kideco" / "dataset"
+DATASET_DIR = Path(__file__).resolve().parent / "dataset"
 DATASET_FILES = [
     "debu_tambang.csv",
     "gas_tambang.csv",
@@ -19,6 +19,10 @@ TIME_COLUMN = "waktu"
 def parse_args():
     parser = argparse.ArgumentParser(description="Expand IoT fuzzy CSV datasets with dummy rows.")
     parser.add_argument("--target-rows", type=int, default=500, help="Total rows per CSV file.")
+    parser.add_argument(
+        "--end-date",
+        help="Expand every dataset through this timestamp, for example 2026-06-20 23:55:00.",
+    )
     parser.add_argument("--jitter", type=float, default=0.04, help="Numeric variation ratio.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
@@ -56,10 +60,17 @@ def clean_number(value):
     return rounded
 
 
-def expand_file(path, target_rows, jitter, rng, create_backup):
+def expand_file(path, target_rows, end_date, jitter, rng, create_backup):
     df = pd.read_csv(path)
     df[TIME_COLUMN] = pd.to_datetime(df[TIME_COLUMN])
     df = df.sort_values(TIME_COLUMN).reset_index(drop=True)
+
+    interval = infer_interval(df)
+    if end_date:
+        end_time = pd.to_datetime(end_date)
+        if end_time < df[TIME_COLUMN].min():
+            raise ValueError(f"End date for {path.name} is before its first timestamp")
+        target_rows = int((end_time - df[TIME_COLUMN].min()) / interval) + 1
 
     if target_rows <= len(df):
         print(f"{path.name}: already has {len(df)} rows, skipped")
@@ -70,7 +81,6 @@ def expand_file(path, target_rows, jitter, rng, create_backup):
         if not backup_path.exists():
             shutil.copy2(path, backup_path)
 
-    interval = infer_interval(df)
     nums = numeric_columns(df)
     rows = df.to_dict("records")
     last_time = df[TIME_COLUMN].max()
@@ -103,6 +113,7 @@ def main():
         expand_file(
             DATASET_DIR / filename,
             target_rows=args.target_rows,
+            end_date=args.end_date,
             jitter=args.jitter,
             rng=rng,
             create_backup=not args.no_backup,
