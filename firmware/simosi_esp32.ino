@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  SIMOSI — Smart IoT Monitoring System
- *  Firmware ESP32 v1.0
+ *  Firmware ESP32 v1.1 (Includes Remote Maintenance Control)
  * ============================================================
  *  Sensors:
  *    DHT22   → GPIO4  (temperature, humidity)
@@ -14,7 +14,8 @@
  *    1. Baca semua sensor
  *    2. Bangun JSON payload
  *    3. POST ke /api/v1/readings
- *    4. Tunggu interval → ulangi
+ *    4. Polling target perintah remote (restart, sleep, turn_off)
+ *    5. Tunggu interval → ulangi
  * ============================================================
  */
 
@@ -27,11 +28,11 @@
 // =============================================================
 
 // WiFi
-const char* WIFI_SSID     = "WIFI_SSID_KAMU";
-const char* WIFI_PASSWORD = "WIFI_PASSWORD_KAMU";
+const char* WIFI_SSID     = "Ameera01";
+const char* WIFI_PASSWORD = "ameera01";
 
 // SIMOSI API
-const char* API_URL = "http://192.168.1.100:8000/api/v1/readings";
+const char* API_URL = "https://api.rifkinasss.my.id/api/v1/readings";
 
 // Device
 const char* DEVICE_CODE = "ESP32-MINE-001";
@@ -90,8 +91,6 @@ float calculateRs(int adcValue, float rl)
 
 /**
  * MQ4 — Estimasi CH4 (ppm) dari rasio Rs/R0.
- * Kurva approx: log(ppm) = (log(Rs/R0) - b) / m
- * Datasheet MQ4: slope ≈ -0.36, intercept ≈ 1.18
  */
 float readCH4_ppm()
 {
@@ -99,10 +98,8 @@ float readCH4_ppm()
   float rs = calculateRs(adc, RL_MQ4);
   float ratio = rs / R0_MQ4;
 
-  // Curve fitting dari datasheet MQ4 untuk CH4
   float ppm = pow(10, ((log10(ratio) - 1.18) / -0.36));
 
-  // Clamp ke range sensor
   if (ppm < 300)   ppm = 300;
   if (ppm > 10000)  ppm = 10000;
 
@@ -111,7 +108,6 @@ float readCH4_ppm()
 
 /**
  * MQ7 — Estimasi CO (ppm) dari rasio Rs/R0.
- * Datasheet MQ7: slope ≈ -0.77, intercept ≈ 1.41
  */
 float readCO_ppm()
 {
@@ -129,7 +125,6 @@ float readCO_ppm()
 
 /**
  * MQ135 — Estimasi CO2 (ppm) dari rasio Rs/R0.
- * Datasheet MQ135: slope ≈ -0.42, intercept ≈ 1.20
  */
 float readCO2_ppm()
 {
@@ -178,12 +173,134 @@ void connectWiFi()
   else
   {
     Serial.println(" GAGAL!");
-    Serial.println("[WiFi] Akan coba lagi di iterasi berikutnya.");
   }
 }
 
 // =============================================================
-// Kirim Data ke API
+// Kirim Status Acknowledgement Perintah ke API
+// =============================================================
+
+void sendAck(int commandId, String status, String errMsg)
+{
+  String baseUrl = String(API_URL);
+  int lastSlash = baseUrl.lastIndexOf("/readings");
+  if (lastSlash == -1) return;
+  String ackUrl = baseUrl.substring(0, lastSlash) + "/devices/" + String(DEVICE_CODE) + "/commands/" + String(commandId) + "/ack";
+
+  HTTPClient http;
+  http.begin(ackUrl);
+  http.addHeader("Content-Type", "application/json");
+
+  String payload = "{\"status\":\"" + status + "\"";
+  if (errMsg.length() > 0)
+  {
+    payload += ",\"error_message\":\"" + errMsg + "\"";
+  }
+  payload += "}";
+
+  Serial.println("[ACK] Mengirim status: " + status + " untuk Command ID: " + String(commandId));
+  int httpCode = http.POST(payload);
+  Serial.print("[ACK] HTTP Code: ");
+  Serial.println(httpCode);
+  http.end();
+}
+
+// =============================================================
+// Polling Perintah Remote dari API
+// =============================================================
+
+void checkAndExecuteCommands()
+{
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  String baseUrl = String(API_URL);
+  int lastSlash = baseUrl.lastIndexOf("/readings");
+  if (lastSlash == -1) return;
+  String commandUrl = baseUrl.substring(0, lastSlash) + "/devices/" + String(DEVICE_CODE) + "/commands/next";
+
+  HTTPClient http;
+  http.begin(commandUrl);
+  http.setTimeout(5000);
+
+  Serial.println("[POLL] Memeriksa perintah maintenance dari dashboard...");
+  int httpCode = http.GET();
+  if (httpCode == 200)
+  {
+    String payload = http.getString();
+    http.end();
+
+    // Jika payload kosong atau bernilai null
+    if (payload.indexOf("\"data\":null") != -1 || payload.indexOf("\"data\": null") != -1)
+    {
+      Serial.println("[POLL] Tidak ada perintah pending.");
+      return;
+    }
+
+    // Parsing Command ID
+    int idIndex = payload.indexOf("\"id\":");
+    if (idIndex == -1) return;
+    int idStart = idIndex + 5;
+    int idEnd = payload.indexOf(",", idStart);
+    if (idEnd == -1) idEnd = payload.indexOf("}", idStart);
+    String idStr = payload.substring(idStart, idEnd);
+    idStr.trim();
+    int commandId = idStr.toInt();
+
+    // Parsing Command Verb
+    int cmdIndex = payload.indexOf("\"command\":\"");
+    if (cmdIndex == -1) return;
+    int cmdStart = cmdIndex + 11;
+    int cmdEnd = payload.indexOf("\"", cmdStart);
+    String command = payload.substring(cmdStart, cmdEnd);
+    command.trim();
+
+    Serial.print("[POLL] Menerima instruksi: ");
+    Serial.println(command);
+
+    // Eksekusi aksi
+    if (command == "restart")
+    {
+      Serial.println("[EXEC] Mengirim ACK lalu melakukan reboot...");
+      sendAck(commandId, "executed", "");
+      delay(1000);
+      ESP.restart();
+    }
+    else if (command == "turn_off")
+    {
+      Serial.println("[EXEC] Mengirim ACK lalu mematikan node (Deep Sleep Permanent)...");
+      sendAck(commandId, "executed", "");
+      delay(1000);
+      ESP.deepSleep(0); // Tidur selamanya sampai reset fisik / tombol dipicu
+    }
+    else if (command == "sleep")
+    {
+      Serial.println("[EXEC] Mengirim ACK lalu tidur 10 menit...");
+      sendAck(commandId, "executed", "");
+      delay(1000);
+      ESP.deepSleep(600000000); // 10 menit (dalam mikrodetik)
+    }
+    else if (command == "turn_on")
+    {
+      Serial.println("[EXEC] Node sudah hidup. Mengirim ACK...");
+      sendAck(commandId, "executed", "");
+    }
+    else
+    {
+      Serial.print("[EXEC] Perintah tidak didukung: ");
+      Serial.println(command);
+      sendAck(commandId, "failed", "Command not supported by this firmware version");
+    }
+  }
+  else
+  {
+    Serial.print("[POLL] Error HTTP: ");
+    Serial.println(httpCode);
+    http.end();
+  }
+}
+
+// =============================================================
+// Kirim Data Sensor ke API
 // =============================================================
 
 bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
@@ -197,13 +314,12 @@ bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
   HTTPClient http;
   http.begin(API_URL);
   http.addHeader("Content-Type", "application/json");
-  http.setTimeout(10000); // 10 detik timeout
+  http.setTimeout(10000);
 
   // Bangun JSON payload
   String json = "{";
   json += "\"device_code\":\"" + String(DEVICE_CODE) + "\"";
 
-  // DHT22 — hanya kirim jika valid
   if (!isnan(temp))
   {
     json += ",\"temperature\":" + String(temp, 2);
@@ -213,19 +329,11 @@ bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
     json += ",\"humidity\":" + String(hum, 2);
   }
 
-  // MQ4 — CH4
   json += ",\"ch4\":" + String(ch4, 2);
-
-  // MQ7 — CO
   json += ",\"co\":" + String(co, 2);
-
-  // MQ135 — CO2 estimated
   json += ",\"co2_estimated\":" + String(co2, 2);
-
-  // Device telemetry
   json += ",\"wifi_rssi\":" + String(WiFi.RSSI());
   json += ",\"rtc_synced\":false";
-
   json += "}";
 
   Serial.println();
@@ -242,7 +350,6 @@ bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
     Serial.println(httpCode);
     Serial.print("[API] Response: ");
     Serial.println(response);
-
     http.end();
     return (httpCode == 201);
   }
@@ -291,7 +398,6 @@ void printReadings(float temp, float hum, float ch4, float co, float co2)
   Serial.print("CH4         : ");
   Serial.print(ch4, 2);
   Serial.println(" ppm");
-
   Serial.println("H2S         : -- (MQ136 belum terpasang)");
 
   // EMISI ALAT BERAT
@@ -300,7 +406,6 @@ void printReadings(float temp, float hum, float ch4, float co, float co2)
   Serial.print("CO          : ");
   Serial.print(co, 2);
   Serial.println(" ppm");
-
   Serial.print("CO2 (est)   : ");
   Serial.print(co2, 2);
   Serial.println(" ppm");
@@ -316,7 +421,6 @@ void printReadings(float temp, float hum, float ch4, float co, float co2)
   Serial.print("Free Heap   : ");
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
-
   Serial.println("==============================================================");
 }
 
@@ -331,7 +435,7 @@ void setup()
   Serial.println();
   Serial.println("==============================================================");
   Serial.println("          SIMOSI - SMART AIR MONITORING SYSTEM");
-  Serial.println("          Firmware v1.0");
+  Serial.println("          Firmware v1.1");
   Serial.println("==============================================================");
 
   // Init sensor
@@ -369,17 +473,19 @@ void loop()
 
   // 3. Kirim ke SIMOSI API
   bool success = sendToAPI(temperature, humidity, ch4_ppm, co_ppm, co2_ppm);
-
   if (success)
   {
     Serial.println("[OK] Data berhasil dikirim ke server!");
   }
   else
   {
-    Serial.println("[WARN] Gagal kirim data. Akan coba lagi.");
+    Serial.println("[WARN] Gagal kirim data.");
   }
 
-  // 4. Tunggu interval
+  // 4. Periksa apakah ada perintah remote control dari server
+  checkAndExecuteCommands();
+
+  // 5. Tunggu interval
   Serial.println();
   Serial.print("[WAIT] Pembacaan berikutnya dalam ");
   Serial.print(READING_INTERVAL / 1000);
