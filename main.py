@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import analysis, config, devices, emission, locations, readings
+from app.routes import analysis, config, devices, emission, locations, readings, sensors
 
 
 app = FastAPI(
@@ -25,6 +25,7 @@ app.include_router(analysis.router)     # /api/v1/analysis
 app.include_router(emission.router)     # /api/v1/emission
 app.include_router(config.router)       # /api/v1/config
 app.include_router(locations.router)    # /api/v1/locations
+app.include_router(sensors.router)      # /api/v1/sensors
 
 
 @app.get("/")
