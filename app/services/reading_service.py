@@ -40,7 +40,9 @@ def _to_decimal(value: float | None) -> Decimal | None:
 
 
 def _resolve_device(session: Session, device_ref: str) -> Device:
-    """Resolve device by UUID or device_code."""
+    """Resolve device by UUID or device_code.
+    If it doesn't exist, automatically provision the device (Option B).
+    """
     try:
         uid = UUID(device_ref)
         device = session.get(Device, uid)
@@ -54,8 +56,27 @@ def _resolve_device(session: Session, device_ref: str) -> Device:
     ).first()
 
     if device is None:
-        raise LookupError(f"Device '{device_ref}' tidak ditemukan")
+        # Auto-provision the device
+        device = Device(
+            device_code=device_ref.strip(),
+            device_name=f"Auto Node {device_ref}",
+            location="Lokasi Belum Ditentukan",
+            description="Otomatis terdaftar dari pengiriman data sensor ESP32",
+        )
+        session.add(device)
+        session.flush()  # dapatkan device.id
+
+        # Auto-create initial state
+        state = DeviceState(
+            device_id=device.id,
+            is_online=True,
+            power_state="on",
+        )
+        session.add(state)
+        session.flush()
+
     return device
+
 
 
 def _serialize_reading(
