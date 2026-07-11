@@ -1,20 +1,20 @@
 /*
  * ============================================================
  *  SIMOSI — Smart IoT Monitoring System
- *  Firmware ESP32 v1.1 (Includes Remote Maintenance Control)
+ *  Firmware ESP32 v1.2 (Includes RTC DS3231 & Remote Control)
  * ============================================================
- *  Sensors:
+ *  Sensors & Hardware:
  *    DHT22   → GPIO4  (temperature, humidity)
  *    MQ4     → GPIO34 (CH4 / methane)
  *    MQ7     → GPIO35 (CO / carbon monoxide)
  *    MQ135   → GPIO32 (CO2 estimated)
- *    DS3231  → I2C    (RTC — optional)
+ *    DS3231  → I2C    (RTC - SDA: GPIO21, SCL: GPIO22)
  *
  *  Flow:
  *    1. Baca semua sensor
- *    2. Bangun JSON payload
- *    3. POST ke /api/v1/readings
- *    4. Polling target perintah remote (restart, sleep, turn_off)
+ *    2. Dapatkan timestamp lokal dari RTC DS3231 (WITA / UTC+8)
+ *    3. POST payload JSON ke /api/v1/readings
+ *    4. Polling perintah maintenance dari server (restart, sleep, dll)
  *    5. Tunggu interval → ulangi
  * ============================================================
  */
@@ -22,6 +22,8 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <DHT.h>
+#include <Wire.h>
+#include <RTClib.h> // Library untuk DS3231 RTC
 
 // =============================================================
 // KONFIGURASI — SESUAIKAN DENGAN ENVIRONMENT KAMU
@@ -63,16 +65,17 @@ const float RL_MQ7   = 10.0; // kΩ
 const float RL_MQ135 = 20.0; // kΩ
 
 // R0 — resistansi sensor di udara bersih (harus dikalibrasi!)
-// Nilai default, ganti setelah kalibrasi di udara bersih
 float R0_MQ4   = 10.0; // kΩ
 float R0_MQ7   =  4.0; // kΩ
-float R0_MQ135 = 76.63; // kΩ (dari seed data calibration_profiles)
+float R0_MQ135 = 76.63; // kΩ
 
 // =============================================================
-// OBJECTS
+// OBJECTS & GLOBALS
 // =============================================================
 
 DHT dht(DHTPIN, DHTTYPE);
+RTC_DS3231 rtc;
+bool rtcFound = false;
 
 // =============================================================
 // HELPER FUNCTIONS
@@ -80,7 +83,6 @@ DHT dht(DHTPIN, DHTTYPE);
 
 /**
  * Hitung Rs (resistansi sensor) dari pembacaan ADC.
- * Rs = RL * (Vcc - Vout) / Vout
  */
 float calculateRs(int adcValue, float rl)
 {
@@ -166,14 +168,28 @@ void connectWiFi()
     Serial.println(" OK!");
     Serial.print("[WiFi] IP Address: ");
     Serial.println(WiFi.localIP());
-    Serial.print("[WiFi] RSSI: ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm");
   }
   else
   {
     Serial.println(" GAGAL!");
   }
+}
+
+// =============================================================
+// Dapatkan Waktu ISO 8601 dari RTC (Timezone WITA / UTC+8)
+// =============================================================
+
+String getFormattedTime()
+{
+  if (!rtcFound) return "";
+
+  DateTime now = rtc.now();
+  char buf[35];
+  // Format: YYYY-MM-DDThh:mm:ss+08:00
+  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d+08:00", 
+          now.year(), now.month(), now.day(), 
+          now.hour(), now.minute(), now.second());
+  return String(buf);
 }
 
 // =============================================================
@@ -320,6 +336,18 @@ bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
   String json = "{";
   json += "\"device_code\":\"" + String(DEVICE_CODE) + "\"";
 
+  // Waktu RTC (jika modul RTC aktif)
+  String timestamp = getFormattedTime();
+  if (timestamp.length() > 0)
+  {
+    json += ",\"recorded_at\":\"" + timestamp + "\"";
+    json += ",\"rtc_synced\":true";
+  }
+  else
+  {
+    json += ",\"rtc_synced\":false";
+  }
+
   if (!isnan(temp))
   {
     json += ",\"temperature\":" + String(temp, 2);
@@ -333,7 +361,6 @@ bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
   json += ",\"co\":" + String(co, 2);
   json += ",\"co2_estimated\":" + String(co2, 2);
   json += ",\"wifi_rssi\":" + String(WiFi.RSSI());
-  json += ",\"rtc_synced\":false";
   json += "}";
 
   Serial.println();
@@ -421,6 +448,13 @@ void printReadings(float temp, float hum, float ch4, float co, float co2)
   Serial.print("Free Heap   : ");
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
+  
+  String timeStr = getFormattedTime();
+  if (timeStr.length() > 0)
+  {
+    Serial.print("RTC Time    : ");
+    Serial.println(timeStr);
+  }
   Serial.println("==============================================================");
 }
 
@@ -435,12 +469,30 @@ void setup()
   Serial.println();
   Serial.println("==============================================================");
   Serial.println("          SIMOSI - SMART AIR MONITORING SYSTEM");
-  Serial.println("          Firmware v1.1");
+  Serial.println("          Firmware v1.2");
   Serial.println("==============================================================");
 
   // Init sensor
   dht.begin();
   analogReadResolution(12);
+
+  // Inisialisasi I2C & RTC DS3231
+  Wire.begin(); // Default SDA: GPIO21, SCL: GPIO22
+  if (!rtc.begin())
+  {
+    Serial.println("[RTC] Gagal menemukan RTC DS3231. Menggunakan waktu server.");
+    rtcFound = false;
+  }
+  else
+  {
+    Serial.println("[RTC] DS3231 RTC Terdeteksi.");
+    rtcFound = true;
+    if (rtc.lostPower())
+    {
+      Serial.println("[RTC] Daya hilang! Menyetel waktu RTC sesuai waktu kompilasi...");
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+  }
 
   // Init WiFi
   connectWiFi();
