@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import analysis, config, devices, dht22, emission, locations, sensors
+from app.routes import analysis, config, devices, emission, locations, readings
 
 
-app = FastAPI(title="IOT Fuzzy Kideco API")
+app = FastAPI(
+    title="SIMOSI API",
+    description="Smart IoT Monitoring System — Environmental monitoring for mining operations",
+    version="2.0.0",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,13 +18,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(analysis.router)
-app.include_router(config.router)
-app.include_router(devices.router)
-app.include_router(dht22.router)
-app.include_router(emission.router)
-app.include_router(locations.router)
-app.include_router(sensors.router)
+# ── v1 Routes ────────────────────────────────────────────────
+app.include_router(devices.router)      # /api/v1/devices
+app.include_router(readings.router)     # /api/v1/readings
+app.include_router(analysis.router)     # /api/v1/analysis
+app.include_router(emission.router)     # /api/v1/emission
+app.include_router(config.router)       # /api/v1/config
+app.include_router(locations.router)    # /api/v1/locations
 
 
 @app.get("/")

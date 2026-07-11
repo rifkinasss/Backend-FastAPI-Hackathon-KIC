@@ -1,15 +1,45 @@
-from fastapi import APIRouter
+"""Device locations route.
+
+Endpoint:
+  GET /api/v1/locations — Return GPS locations of all active devices
+"""
+
+from fastapi import APIRouter, HTTPException
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import Session, select
+
+from app.core.postgresql import get_postgres_engine
+from app.models import Device
 
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1", tags=["Locations"])
 
 
 @router.get("/locations")
 def get_locations():
-    # Dummy stage: this shape is ready to be replaced by rows from sensors table.
-    return [
-        {"id": "DB001", "name": "Jalan Tambang A", "type": "Debu", "lat": -1.8542, "lng": 116.2156},
-        {"id": "GS001", "name": "Area Dasar Tambang", "type": "Gas", "lat": -1.8612, "lng": 116.2234},
-        {"id": "EM001", "name": "Bengkel Alat Berat", "type": "Emisi", "lat": -1.8485, "lng": 116.2089},
-    ]
+    """Return GPS coordinates of all active devices for map display."""
+    try:
+        with Session(get_postgres_engine()) as session:
+            devices = session.exec(
+                select(Device)
+                .where(Device.is_active == True)  # noqa: E712
+                .where(Device.latitude.isnot(None))
+                .where(Device.longitude.isnot(None))
+                .order_by(Device.device_code)
+            ).all()
 
+            return {
+                "data": [
+                    {
+                        "id": str(device.id),
+                        "device_code": device.device_code,
+                        "name": device.device_name,
+                        "location": device.location,
+                        "lat": float(device.latitude),
+                        "lng": float(device.longitude),
+                    }
+                    for device in devices
+                ]
+            }
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

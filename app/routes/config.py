@@ -1,14 +1,24 @@
+"""Fuzzy configuration route.
+
+Endpoint:
+  GET /api/v1/config/fuzzy — Return fuzzy membership function configuration
+"""
+
 from fastapi import APIRouter
 
 from app.fuzzy.config import konfigurasi_fuzzy
 from app.fuzzy.membership import mf_data
 
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1/config", tags=["Configuration"])
 
 
-@router.get("/config")
-def get_config():
+@router.get("/fuzzy")
+def get_fuzzy_config():
+    """Return fuzzy membership function configuration for all parameters.
+
+    Used by the dashboard to render membership function charts.
+    """
     serialized_config = {}
     for var, cfg in konfigurasi_fuzzy.items():
         mf = mf_data[var]
@@ -23,5 +33,4 @@ def get_config():
                 "hi": mf["hi"].tolist(),
             },
         }
-    return serialized_config
-
+    return {"data": serialized_config}

@@ -10,7 +10,7 @@ load_environment()
 
 DB_CONFIG = build_postgres_url()
 DATA_SOURCE = os.getenv("IOT_FUZZY_DATA_SOURCE", "postgresql").lower()
-DATASET_DIR = Path(__file__).resolve().parents[4] / "iot-fuzzy-kideco" / "dataset"
+DATASET_DIR = Path(__file__).resolve().parents[2] / "dataset"
 
 engine = create_engine(DB_CONFIG, pool_pre_ping=True)
 
@@ -20,6 +20,8 @@ DATASET_FILES = {
     "emisi_alat_berat": "emisi_alat_berat.csv",
 }
 
+# Legacy mapping — kept for CSV loader compatibility.
+# Database queries now use JOINed views in app/data/loaders.py.
 DATABASE_TABLES = {
     "DEBU TAMBANG": "tb_debu_tambang",
     "GAS TAMBANG": "tb_gas_tambang",

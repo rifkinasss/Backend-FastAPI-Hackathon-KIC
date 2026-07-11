@@ -1,7 +1,7 @@
 """Compatibility wrapper for the refactored fuzzy modules.
 
 New code should import from app.fuzzy, app.data, or app.services directly.
-This file keeps existing imports in main.py and older scripts working.
+This file keeps existing imports in older scripts working.
 """
 
 from app.core.config import DATASET_FILES, DATASET_DIR, DATA_SOURCE, DB_CONFIG, engine
@@ -14,7 +14,6 @@ from app.data.loaders import (
     load_from_database as _load_from_database,
     read_csv_dataset as _read_csv_dataset,
     read_full_csv_dataset as _read_full_csv_dataset,
-    read_sql_table as _read_sql_table,
 )
 from app.fuzzy.config import konfigurasi_fuzzy
 from app.fuzzy.membership import (
@@ -35,4 +34,3 @@ from app.services.recommendation_service import (
     RECOMMENDATIONS,
     incident_recommendation as _incident_recommendation,
 )
-
