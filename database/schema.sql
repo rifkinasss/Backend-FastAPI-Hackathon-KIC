@@ -1032,8 +1032,178 @@ ORDER BY sr.device_id, c.category, c.processed_at DESC;
 COMMENT ON VIEW vw_latest_classification IS 'Most recent classification per device per category (debu, gas, emisi).';
 
 -- ************************************************************
--- 9. SEED DATA (Removed per user request - clean database)
+-- 9. MASTER CATALOG SEED DATA
 -- ************************************************************
+-- Baseline configuration catalog. No device/reading transaction data.
+
+DO $$
+DECLARE
+    v_dht22_id  BIGINT;
+    v_mq4_id    BIGINT;
+    v_mq7_id    BIGINT;
+    v_mq135_id  BIGINT;
+    v_rtc_id    BIGINT;
+BEGIN
+
+    -- 9.1 Sensor Definitions
+    INSERT INTO sensor_definitions (sensor_code, sensor_name, manufacturer, description, interface_type)
+    VALUES ('DHT22', 'DHT22 Temperature & Humidity Sensor', 'Aosong Electronics', 'Digital temperature and humidity sensor.', 'digital')
+    ON CONFLICT (sensor_code) DO UPDATE SET
+        sensor_name    = EXCLUDED.sensor_name,
+        manufacturer   = EXCLUDED.manufacturer,
+        description    = EXCLUDED.description,
+        interface_type = EXCLUDED.interface_type,
+        updated_at     = NOW()
+    RETURNING id INTO v_dht22_id;
+
+    INSERT INTO sensor_definitions (sensor_code, sensor_name, manufacturer, description, interface_type)
+    VALUES ('MQ4', 'MQ-4 Methane Gas Sensor', 'Winsen Electronics', 'Semiconductor gas sensor for methane (CH4). Range: 300–10000 ppm.', 'analog')
+    ON CONFLICT (sensor_code) DO UPDATE SET
+        sensor_name    = EXCLUDED.sensor_name,
+        manufacturer   = EXCLUDED.manufacturer,
+        description    = EXCLUDED.description,
+        interface_type = EXCLUDED.interface_type,
+        updated_at     = NOW()
+    RETURNING id INTO v_mq4_id;
+
+    INSERT INTO sensor_definitions (sensor_code, sensor_name, manufacturer, description, interface_type)
+    VALUES ('MQ7', 'MQ-7 Carbon Monoxide Sensor', 'Winsen Electronics', 'Semiconductor gas sensor for carbon monoxide (CO). Range: 20–2000 ppm.', 'analog')
+    ON CONFLICT (sensor_code) DO UPDATE SET
+        sensor_name    = EXCLUDED.sensor_name,
+        manufacturer   = EXCLUDED.manufacturer,
+        description    = EXCLUDED.description,
+        interface_type = EXCLUDED.interface_type,
+        updated_at     = NOW()
+    RETURNING id INTO v_mq7_id;
+
+    INSERT INTO sensor_definitions (sensor_code, sensor_name, manufacturer, description, interface_type)
+    VALUES ('MQ135', 'MQ-135 Air Quality Sensor', 'Winsen Electronics', 'Semiconductor gas sensor for CO2 estimation.', 'analog')
+    ON CONFLICT (sensor_code) DO UPDATE SET
+        sensor_name    = EXCLUDED.sensor_name,
+        manufacturer   = EXCLUDED.manufacturer,
+        description    = EXCLUDED.description,
+        interface_type = EXCLUDED.interface_type,
+        updated_at     = NOW()
+    RETURNING id INTO v_mq135_id;
+
+    INSERT INTO sensor_definitions (sensor_code, sensor_name, manufacturer, description, interface_type)
+    VALUES ('DS3231', 'DS3231 Real-Time Clock', 'Maxim Integrated', 'High-precision I2C real-time clock.', 'i2c')
+    ON CONFLICT (sensor_code) DO UPDATE SET
+        sensor_name    = EXCLUDED.sensor_name,
+        manufacturer   = EXCLUDED.manufacturer,
+        description    = EXCLUDED.description,
+        interface_type = EXCLUDED.interface_type,
+        updated_at     = NOW()
+    RETURNING id INTO v_rtc_id;
+
+    -- 9.2 Sensor Parameters
+    -- DHT22 parameters
+    INSERT INTO sensor_parameters (sensor_def_id, parameter_code, parameter_name, unit, min_value, max_value, precision_dp, description)
+    VALUES (v_dht22_id, 'temperature', 'Temperature', '°C', -40.0000, 80.0000, 2, 'Ambient temperature.')
+    ON CONFLICT (sensor_def_id, parameter_code) DO NOTHING;
+
+    INSERT INTO sensor_parameters (sensor_def_id, parameter_code, parameter_name, unit, min_value, max_value, precision_dp, description)
+    VALUES (v_dht22_id, 'humidity', 'Relative Humidity', '%', 0.0000, 100.0000, 2, 'Relative humidity.')
+    ON CONFLICT (sensor_def_id, parameter_code) DO NOTHING;
+
+    -- MQ4 parameters
+    INSERT INTO sensor_parameters (sensor_def_id, parameter_code, parameter_name, unit, min_value, max_value, precision_dp, description)
+    VALUES (v_mq4_id, 'ch4', 'Methane (CH₄)', 'ppm', 300.0000, 10000.0000, 4, 'Methane gas concentration.')
+    ON CONFLICT (sensor_def_id, parameter_code) DO NOTHING;
+
+    -- MQ7 parameters
+    INSERT INTO sensor_parameters (sensor_def_id, parameter_code, parameter_name, unit, min_value, max_value, precision_dp, description)
+    VALUES (v_mq7_id, 'co', 'Carbon Monoxide (CO)', 'ppm', 20.0000, 2000.0000, 4, 'Carbon monoxide concentration.')
+    ON CONFLICT (sensor_def_id, parameter_code) DO NOTHING;
+
+    -- MQ135 parameters
+    INSERT INTO sensor_parameters (sensor_def_id, parameter_code, parameter_name, unit, min_value, max_value, precision_dp, description)
+    VALUES (v_mq135_id, 'co2_estimated', 'Estimated CO₂', 'ppm', 400.0000, 5000.0000, 4, 'Estimated CO2 concentration.')
+    ON CONFLICT (sensor_def_id, parameter_code) DO NOTHING;
+
+    -- DS3231 parameters
+    INSERT INTO sensor_parameters (sensor_def_id, parameter_code, parameter_name, unit, min_value, max_value, precision_dp, description)
+    VALUES (v_rtc_id, 'rtc_datetime', 'RTC Date/Time', 'datetime', NULL, NULL, 0, 'Real-time clock timestamp.')
+    ON CONFLICT (sensor_def_id, parameter_code) DO NOTHING;
+
+    -- 9.3 Calibration Profile
+    INSERT INTO calibration_profiles (sensor_def_id, profile_name, r0, slope, "offset", calibrated_by, notes)
+    VALUES (
+        v_mq135_id,
+        'MQ135 Factory Baseline',
+        76.630000,
+        -0.420000,
+        1.200000,
+        'Factory',
+        'Default factory calibration values for MQ135.'
+    ) ON CONFLICT DO NOTHING;
+
+END $$;
+
+-- 9.4 Sensor Thresholds (Required for Fuzzy classification limits)
+INSERT INTO sensor_thresholds (parameter_code, parameter_name, unit, warning_min, warning_max, danger_min, danger_max, critical_min, critical_max, source, notes)
+VALUES
+    (
+        'pm25', 'PM2.5 (Fine Particulate)', 'µg/m³',
+        35.0000, 75.0000,
+        75.0001, 150.0000,
+        150.0001, 500.0000,
+        'PP 22/2021 & WHO AQG 2021',
+        'PM2.5 thresholds aligned with Indonesian standards.'
+    ),
+    (
+        'pm10', 'PM10 (Coarse Particulate)', 'µg/m³',
+        50.0000, 150.0000,
+        150.0001, 350.0000,
+        350.0001, 600.0000,
+        'PP 22/2021',
+        'PM10 thresholds for mining dust monitoring.'
+    ),
+    (
+        'ch4', 'Methane (CH₄)', 'ppm',
+        1000.0000, 5000.0000,
+        5000.0001, 10000.0000,
+        10000.0001, 50000.0000,
+        'NIOSH REL',
+        'CH4 explosive range starts at 5% (50000 ppm).'
+    ),
+    (
+        'h2s', 'Hydrogen Sulfide (H₂S)', 'ppm',
+        5.0000, 10.0000,
+        10.0001, 20.0000,
+        20.0001, 100.0000,
+        'NIOSH REL',
+        'H2S IDLH = 50 ppm.'
+    ),
+    (
+        'co', 'Carbon Monoxide (CO)', 'ppm',
+        9.0000, 35.0000,
+        35.0001, 200.0000,
+        200.0001, 1200.0000,
+        'NIOSH REL',
+        'CO IDLH = 1200 ppm.'
+    ),
+    (
+        'co2_estimated', 'Estimated CO₂', 'ppm',
+        1000.0000, 2000.0000,
+        2000.0001, 5000.0000,
+        5000.0001, 40000.0000,
+        'ASHRAE & NIOSH',
+        'CO2 TWA = 5000 ppm.'
+    )
+ON CONFLICT (parameter_code) DO UPDATE SET
+    parameter_name = EXCLUDED.parameter_name,
+    unit           = EXCLUDED.unit,
+    warning_min    = EXCLUDED.warning_min,
+    warning_max    = EXCLUDED.warning_max,
+    danger_min     = EXCLUDED.danger_min,
+    danger_max     = EXCLUDED.danger_max,
+    critical_min   = EXCLUDED.critical_min,
+    critical_max   = EXCLUDED.critical_max,
+    source         = EXCLUDED.source,
+    notes          = EXCLUDED.notes,
+    updated_at     = NOW();
+
 
 
 -- ************************************************************
