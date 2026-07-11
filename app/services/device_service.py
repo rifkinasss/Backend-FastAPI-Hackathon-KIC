@@ -377,3 +377,99 @@ def create_device_command(
             "requested_by": cmd.requested_by,
             "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
         }
+
+
+def get_next_device_command(device_id: str) -> dict[str, Any] | None:
+    """Fetch the oldest pending command for a device and mark it as 'sent'."""
+    with _get_session() as session:
+        device = _resolve_device(session, device_id)
+
+        cmd = session.exec(
+            select(DeviceCommand)
+            .where(DeviceCommand.device_id == device.id)
+            .where(DeviceCommand.status == "pending")
+            .order_by(DeviceCommand.created_at)
+        ).first()
+
+        if cmd is None:
+            return None
+
+        # Update status to 'sent'
+        cmd.status = "sent"
+        session.add(cmd)
+        session.commit()
+        session.refresh(cmd)
+
+        return {
+            "id": cmd.id,
+            "device_id": str(cmd.device_id),
+            "command": cmd.command,
+            "status": cmd.status,
+            "requested_by": cmd.requested_by,
+            "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
+        }
+
+
+def acknowledge_device_command(
+    device_id: str,
+    command_id: int,
+    *,
+    status: str,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    """Acknowledge or fail a command that was sent to the device, updating the device state."""
+    if status not in ("acknowledged", "failed", "executed"):
+        raise ValueError("Status ack harus salah satu dari: acknowledged, failed, executed")
+
+    with _get_session() as session:
+        device = _resolve_device(session, device_id)
+
+        cmd = session.exec(
+            select(DeviceCommand)
+            .where(DeviceCommand.id == command_id)
+            .where(DeviceCommand.device_id == device.id)
+        ).first()
+
+        if cmd is None:
+            raise LookupError(f"Command ID {command_id} tidak ditemukan untuk device '{device_id}'")
+
+        cmd.status = status
+        cmd.error_message = error_message
+        cmd.acknowledged_at = datetime.now(timezone.utc)
+        if status == "executed":
+            cmd.executed_at = datetime.now(timezone.utc)
+        session.add(cmd)
+
+        # Update device state power status
+        state = session.exec(
+            select(DeviceState).where(DeviceState.device_id == device.id)
+        ).first()
+        if state:
+            if status in ("acknowledged", "executed"):
+                if cmd.command == "turn_off":
+                    state.power_state = "off"
+                    state.is_online = False
+                elif cmd.command == "turn_on":
+                    state.power_state = "on"
+                    state.is_online = True
+                elif cmd.command == "restart":
+                    state.power_state = "on"
+                    state.is_online = True
+            elif status == "failed":
+                state.power_state = "error"
+            session.add(state)
+
+        session.commit()
+        session.refresh(cmd)
+
+        return {
+            "id": cmd.id,
+            "device_id": str(cmd.device_id),
+            "command": cmd.command,
+            "status": cmd.status,
+            "requested_by": cmd.requested_by,
+            "error_message": cmd.error_message,
+            "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
+            "acknowledged_at": cmd.acknowledged_at.isoformat() if cmd.acknowledged_at else None,
+        }
+

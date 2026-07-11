@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.services.device_service import (
+    acknowledge_device_command,
     create_device,
     create_device_command,
     delete_device,
@@ -29,11 +30,13 @@ from app.services.device_service import (
     get_device,
     get_device_configs,
     get_device_state,
+    get_next_device_command,
     list_device_states,
     list_devices,
     set_device_config,
     update_device,
 )
+
 
 
 router = APIRouter(prefix="/api/v1/devices", tags=["Devices"])
@@ -277,3 +280,48 @@ def api_send_device_command(device_id: str, payload: DeviceCommandRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class DeviceCommandAckRequest(BaseModel):
+    status: str = Field(
+        ...,
+        examples=["acknowledged"],
+        description="Command status outcome (acknowledged, failed, executed).",
+    )
+    error_message: Optional[str] = Field(default=None, examples=["Sensor read timeout"])
+
+
+@router.get("/{device_id}/commands/next")
+def api_get_next_command(device_id: str):
+    """Poll the next pending command for the ESP32 to execute."""
+    try:
+        command = get_next_device_command(device_id)
+        return {"data": command}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{device_id}/commands/{command_id}/ack")
+def api_ack_command(
+    device_id: str,
+    command_id: int,
+    payload: DeviceCommandAckRequest,
+):
+    """Device reports execution status of a command back to backend."""
+    try:
+        command = acknowledge_device_command(
+            device_id,
+            command_id,
+            status=payload.status,
+            error_message=payload.error_message,
+        )
+        return {"message": "Command status updated successfully", "data": command}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
