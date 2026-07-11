@@ -11,7 +11,38 @@
 -- ============================================================
 
 -- ************************************************************
--- 0. EXTENSIONS
+-- 0. CLEAN SLATE (Drops old tables/views)
+-- ************************************************************
+
+DROP VIEW IF EXISTS vw_dashboard_latest CASCADE;
+DROP VIEW IF EXISTS vw_active_alerts CASCADE;
+DROP VIEW IF EXISTS vw_latest_classification CASCADE;
+
+DROP TABLE IF EXISTS notification_logs CASCADE;
+DROP TABLE IF EXISTS alerts CASCADE;
+DROP TABLE IF EXISTS ai_process_logs CASCADE;
+DROP TABLE IF EXISTS classifications CASCADE;
+DROP TABLE IF EXISTS tb_emisi_alat_berat CASCADE;
+DROP TABLE IF EXISTS tb_gas_tambang CASCADE;
+DROP TABLE IF EXISTS tb_debu_tambang CASCADE;
+DROP TABLE IF EXISTS sensor_readings CASCADE;
+DROP TABLE IF EXISTS sensor_thresholds CASCADE;
+DROP TABLE IF EXISTS calibration_profiles CASCADE;
+DROP TABLE IF EXISTS device_sensors CASCADE;
+DROP TABLE IF EXISTS sensor_parameters CASCADE;
+DROP TABLE IF EXISTS sensor_definitions CASCADE;
+DROP TABLE IF EXISTS device_logs CASCADE;
+DROP TABLE IF EXISTS device_commands CASCADE;
+DROP TABLE IF EXISTS device_states CASCADE;
+DROP TABLE IF EXISTS device_configs CASCADE;
+DROP TABLE IF EXISTS devices CASCADE;
+
+-- Legacy tables from old schema
+DROP TABLE IF EXISTS dht22_readings CASCADE;
+DROP TABLE IF EXISTS sensors CASCADE;
+
+-- ************************************************************
+-- 0.5 EXTENSIONS
 -- ************************************************************
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";      -- gen_random_uuid()
@@ -36,6 +67,7 @@ $$ LANGUAGE plpgsql;
 -- ************************************************************
 -- 2. DEVICE MANAGEMENT
 -- ************************************************************
+
 
 -- ============================================================
 -- 2.1 devices
