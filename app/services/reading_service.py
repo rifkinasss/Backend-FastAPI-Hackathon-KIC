@@ -149,6 +149,8 @@ def store_reading(
 
         if not device.is_active:
             raise ValueError(f"Device '{device_code}' sudah dinonaktifkan")
+        if device.provisioning_status != "approved":
+            raise ValueError(f"Device '{device_code}' belum disetujui untuk mengirim data")
 
         # 1. Header
         reading = SensorReading(

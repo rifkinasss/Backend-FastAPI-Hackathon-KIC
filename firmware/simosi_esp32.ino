@@ -36,8 +36,8 @@ const char* WIFI_PASSWORD = "ameera01";
 // SIMOSI API
 const char* API_URL = "https://api.rifkinasss.my.id/api/v1/readings";
 
-// Device
-const char* DEVICE_CODE = "ESP32-MINE-001";
+// Device code dibuat otomatis dari MAC address dan didaftarkan saat boot.
+const char* FIRMWARE_VERSION = "1.3.0";
 
 // Interval pembacaan sensor (ms)
 const unsigned long READING_INTERVAL = 30000; // 30 detik
@@ -76,6 +76,28 @@ float R0_MQ135 = 76.63; // kΩ
 DHT dht(DHTPIN, DHTTYPE);
 RTC_DS3231 rtc;
 bool rtcFound = false;
+bool provisioned = false;
+bool monitoringEnabled = true;
+
+String getHardwareId()
+{
+  return WiFi.macAddress();
+}
+
+String getDeviceCode()
+{
+  String compactId = getHardwareId();
+  compactId.replace(":", "");
+  compactId.toUpperCase();
+  return "ESP32-" + compactId;
+}
+
+String getApiBaseUrl()
+{
+  String baseUrl = String(API_URL);
+  int readingPath = baseUrl.lastIndexOf("/readings");
+  return readingPath == -1 ? baseUrl : baseUrl.substring(0, readingPath);
+}
 
 // =============================================================
 // HELPER FUNCTIONS
@@ -198,10 +220,7 @@ String getFormattedTime()
 
 void sendAck(int commandId, String status, String errMsg)
 {
-  String baseUrl = String(API_URL);
-  int lastSlash = baseUrl.lastIndexOf("/readings");
-  if (lastSlash == -1) return;
-  String ackUrl = baseUrl.substring(0, lastSlash) + "/devices/" + String(DEVICE_CODE) + "/commands/" + String(commandId) + "/ack";
+  String ackUrl = getApiBaseUrl() + "/devices/" + getDeviceCode() + "/commands/" + String(commandId) + "/ack";
 
   HTTPClient http;
   http.begin(ackUrl);
@@ -229,10 +248,7 @@ void checkAndExecuteCommands()
 {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  String baseUrl = String(API_URL);
-  int lastSlash = baseUrl.lastIndexOf("/readings");
-  if (lastSlash == -1) return;
-  String commandUrl = baseUrl.substring(0, lastSlash) + "/devices/" + String(DEVICE_CODE) + "/commands/next";
+  String commandUrl = getApiBaseUrl() + "/devices/" + getDeviceCode() + "/commands/next";
 
   HTTPClient http;
   http.begin(commandUrl);
@@ -283,10 +299,9 @@ void checkAndExecuteCommands()
     }
     else if (command == "turn_off")
     {
-      Serial.println("[EXEC] Mengirim ACK lalu mematikan node (Deep Sleep Permanent)...");
+      Serial.println("[EXEC] Monitoring dimatikan; koneksi tetap hidup untuk menerima turn_on.");
+      monitoringEnabled = false;
       sendAck(commandId, "executed", "");
-      delay(1000);
-      ESP.deepSleep(0); // Tidur selamanya sampai reset fisik / tombol dipicu
     }
     else if (command == "sleep")
     {
@@ -297,7 +312,8 @@ void checkAndExecuteCommands()
     }
     else if (command == "turn_on")
     {
-      Serial.println("[EXEC] Node sudah hidup. Mengirim ACK...");
+      Serial.println("[EXEC] Monitoring diaktifkan.");
+      monitoringEnabled = true;
       sendAck(commandId, "executed", "");
     }
     else
@@ -313,6 +329,45 @@ void checkAndExecuteCommands()
     Serial.println(httpCode);
     http.end();
   }
+}
+
+// =============================================================
+// Registrasi otomatis setelah firmware di-flash
+// =============================================================
+
+bool provisionDevice()
+{
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient http;
+  http.begin(getApiBaseUrl() + "/devices/provision");
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(10000);
+
+  String json = "{";
+  json += "\"hardware_id\":\"" + getHardwareId() + "\",";
+  json += "\"firmware_ver\":\"" + String(FIRMWARE_VERSION) + "\",";
+  json += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
+  json += "\"sensors\":[";
+  json += "{\"sensor_code\":\"DHT22\",\"gpio_pin\":\"GPIO4\"},";
+  json += "{\"sensor_code\":\"MQ4\",\"gpio_pin\":\"GPIO34\"},";
+  json += "{\"sensor_code\":\"MQ7\",\"gpio_pin\":\"GPIO35\"},";
+  json += "{\"sensor_code\":\"MQ135\",\"gpio_pin\":\"GPIO32\"},";
+  json += "{\"sensor_code\":\"DS3231\",\"i2c_address\":\"0x68\"}";
+  json += "]}";
+
+  int httpCode = http.POST(json);
+  String response = httpCode > 0 ? http.getString() : "";
+  http.end();
+
+  if (httpCode != 201 && httpCode != 200) {
+    Serial.printf("[PROVISION] Gagal: HTTP %d\n", httpCode);
+    return false;
+  }
+
+  provisioned = response.indexOf("\"provisioning_status\":\"approved\"") >= 0;
+  Serial.printf("[PROVISION] %s (%s)\n", provisioned ? "Disetujui" : "Menunggu aktivasi dashboard", getDeviceCode().c_str());
+  return provisioned;
 }
 
 // =============================================================
@@ -334,7 +389,7 @@ bool sendToAPI(float temp, float hum, float ch4, float co, float co2)
 
   // Bangun JSON payload
   String json = "{";
-  json += "\"device_code\":\"" + String(DEVICE_CODE) + "\"";
+  json += "\"device_code\":\"" + getDeviceCode() + "\"";
 
   // Waktu RTC (jika modul RTC aktif)
   String timestamp = getFormattedTime();
@@ -469,7 +524,7 @@ void setup()
   Serial.println();
   Serial.println("==============================================================");
   Serial.println("          SIMOSI - SMART AIR MONITORING SYSTEM");
-  Serial.println("          Firmware v1.2");
+  Serial.println("          Firmware v1.3");
   Serial.println("==============================================================");
 
   // Init sensor
@@ -496,8 +551,9 @@ void setup()
 
   // Init WiFi
   connectWiFi();
+  provisionDevice();
 
-  Serial.println("[INIT] Device code: " + String(DEVICE_CODE));
+  Serial.println("[INIT] Device code: " + getDeviceCode());
   Serial.println("[INIT] API URL: " + String(API_URL));
   Serial.println("[INIT] Interval: " + String(READING_INTERVAL / 1000) + " detik");
   Serial.println("[INIT] Setup selesai. Mulai monitoring...");
@@ -523,19 +579,20 @@ void loop()
   // 2. Print ke Serial Monitor (debug)
   printReadings(temperature, humidity, ch4_ppm, co_ppm, co2_ppm);
 
-  // 3. Kirim ke SIMOSI API
-  bool success = sendToAPI(temperature, humidity, ch4_ppm, co_ppm, co2_ppm);
+  // 3. Perangkat baru menunggu lokasi/approval dari dashboard.
+  if (!provisioned) provisionDevice();
+  bool success = provisioned && monitoringEnabled && sendToAPI(temperature, humidity, ch4_ppm, co_ppm, co2_ppm);
   if (success)
   {
     Serial.println("[OK] Data berhasil dikirim ke server!");
   }
   else
   {
-    Serial.println("[WARN] Gagal kirim data.");
+    Serial.println(monitoringEnabled ? "[WARN] Gagal kirim data." : "[INFO] Monitoring sedang dimatikan.");
   }
 
-  // 4. Periksa apakah ada perintah remote control dari server
-  checkAndExecuteCommands();
+  // 4. Tetap polling saat monitoring off agar turn_on dapat diterima.
+  if (provisioned) checkAndExecuteCommands();
 
   // 5. Tunggu interval
   Serial.println();

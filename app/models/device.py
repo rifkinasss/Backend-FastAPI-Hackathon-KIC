@@ -51,6 +51,7 @@ class Device(SQLModel, table=True):
         ),
     )
     device_code: str = Field(sa_column=Column(String(50), nullable=False))
+    hardware_id: Optional[str] = Field(default=None, sa_column=Column(String(64), unique=True))
     device_name: str = Field(sa_column=Column(String(150), nullable=False))
     location: Optional[str] = Field(default=None, sa_column=Column(String(200)))
     latitude: Optional[Decimal] = Field(default=None, sa_column=Column(Numeric(10, 7)))
@@ -60,6 +61,10 @@ class Device(SQLModel, table=True):
     is_active: bool = Field(
         default=True,
         sa_column=Column(Boolean, nullable=False, server_default=text("TRUE")),
+    )
+    provisioning_status: str = Field(
+        default="approved",
+        sa_column=Column(String(20), nullable=False, server_default=text("'approved'")),
     )
     created_at: Optional[datetime] = Field(
         default=None,

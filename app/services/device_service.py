@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from app.core.postgresql import get_postgres_engine
-from app.models import Device, DeviceCommand, DeviceConfig, DeviceState
+from app.models import Device, DeviceCommand, DeviceConfig, DeviceSensor, SensorDefinition, DeviceState
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -32,6 +32,7 @@ def _serialize_device(device: Device) -> dict[str, Any]:
     return {
         "id": str(device.id),
         "device_code": device.device_code,
+        "hardware_id": device.hardware_id,
         "device_name": device.device_name,
         "location": device.location,
         "latitude": float(device.latitude) if device.latitude is not None else None,
@@ -39,6 +40,7 @@ def _serialize_device(device: Device) -> dict[str, Any]:
         "firmware_ver": device.firmware_ver,
         "description": device.description,
         "is_active": device.is_active,
+        "provisioning_status": device.provisioning_status,
         "created_at": device.created_at.isoformat() if device.created_at else None,
         "updated_at": device.updated_at.isoformat() if device.updated_at else None,
     }
@@ -152,7 +154,88 @@ def list_devices(*, include_inactive: bool = False) -> list[dict[str, Any]]:
             stmt = stmt.where(Device.is_active == True)  # noqa: E712
 
         rows = session.exec(stmt).all()
-        return [_serialize_device(d) for d in rows]
+    return [_serialize_device(d) for d in rows]
+
+
+def provision_device(*, hardware_id: str, firmware_ver: str | None, wifi_rssi: int | None, sensors: list[dict[str, str | None]]) -> dict[str, Any]:
+    """Register a newly flashed ESP32 and map its reported sensors.
+
+    New devices remain pending until an operator supplies their deployment location.
+    Subsequent calls are heartbeats and only refresh firmware/state information.
+    """
+    with _get_session() as session:
+        device = session.exec(select(Device).where(Device.hardware_id == hardware_id)).first()
+        created = device is None
+        if device is None:
+            compact_id = hardware_id.replace(":", "").replace("-", "")[-12:].upper()
+            device = Device(
+                device_code=f"ESP32-{compact_id}",
+                device_name=f"ESP32 {compact_id}",
+                hardware_id=hardware_id,
+                firmware_ver=firmware_ver,
+                provisioning_status="pending",
+            )
+            session.add(device)
+            session.flush()
+            now = datetime.now(timezone.utc)
+            session.add(DeviceState(
+                device_id=device.id,
+                is_online=True,
+                power_state="on",
+                last_seen_at=now,
+                last_boot_at=now,
+                wifi_rssi=wifi_rssi,
+            ))
+        elif firmware_ver:
+            device.firmware_ver = firmware_ver
+
+        now = datetime.now(timezone.utc)
+        state = session.exec(select(DeviceState).where(DeviceState.device_id == device.id)).first()
+        if state:
+            state.is_online = True
+            state.power_state = "on"
+            state.last_seen_at = now
+            state.last_boot_at = now
+            state.wifi_rssi = wifi_rssi
+
+        mapped = []
+        for sensor in sensors:
+            code = (sensor["sensor_code"] or "").strip().upper()
+            if not code:
+                continue
+            definition = session.exec(select(SensorDefinition).where(SensorDefinition.sensor_code == code)).first()
+            if definition is None:
+                continue
+            mapping = session.exec(
+                select(DeviceSensor).where(
+                    DeviceSensor.device_id == device.id,
+                    DeviceSensor.sensor_def_id == definition.id,
+                )
+            ).first()
+            if mapping is None:
+                session.add(DeviceSensor(
+                    device_id=device.id,
+                    sensor_def_id=definition.id,
+                    gpio_pin=sensor.get("gpio_pin"),
+                    i2c_address=sensor.get("i2c_address"),
+                    notes="Terdeteksi otomatis saat provisioning",
+                ))
+            mapped.append(code)
+
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+        return {"created": created, "device": _serialize_device(device), "detected_sensors": mapped}
+
+
+def set_provisioning_status(device_id: str, status: str) -> dict[str, Any]:
+    with _get_session() as session:
+        device = _resolve_device(session, device_id)
+        device.provisioning_status = status
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+        return _serialize_device(device)
 
 
 def get_device(device_id: str) -> dict[str, Any]:
@@ -353,15 +436,11 @@ def create_device_command(
         )
         session.add(cmd)
 
-        # Update power state of the device state row immediately to simulate immediate response
+        # Keep the previous state until the ESP32 confirms the command via /ack.
         state = session.exec(
             select(DeviceState).where(DeviceState.device_id == device.id)
         ).first()
         if state:
-            if command == "turn_on":
-                state.power_state = "on"
-            elif command == "turn_off":
-                state.power_state = "off"
             state.last_command_at = datetime.now(timezone.utc)
             session.add(state)
 
@@ -380,9 +459,17 @@ def create_device_command(
 
 
 def get_next_device_command(device_id: str) -> dict[str, Any] | None:
-    """Fetch the oldest pending command for a device and mark it as 'sent'."""
+    """Fetch the oldest pending command and treat the poll as a heartbeat."""
     with _get_session() as session:
         device = _resolve_device(session, device_id)
+
+        state = session.exec(
+            select(DeviceState).where(DeviceState.device_id == device.id)
+        ).first()
+        if state:
+            state.is_online = True
+            state.last_seen_at = datetime.now(timezone.utc)
+            session.add(state)
 
         cmd = session.exec(
             select(DeviceCommand)
@@ -392,6 +479,7 @@ def get_next_device_command(device_id: str) -> dict[str, Any] | None:
         ).first()
 
         if cmd is None:
+            session.commit()
             return None
 
         # Update status to 'sent'
@@ -447,8 +535,10 @@ def acknowledge_device_command(
         if state:
             if status in ("acknowledged", "executed"):
                 if cmd.command == "turn_off":
+                    # "Off" means monitoring disabled. ESP32 stays online so it can
+                    # receive a later turn_on command without a physical reset.
                     state.power_state = "off"
-                    state.is_online = False
+                    state.is_online = True
                 elif cmd.command == "turn_on":
                     state.power_state = "on"
                     state.is_online = True
@@ -472,4 +562,3 @@ def acknowledge_device_command(
             "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
             "acknowledged_at": cmd.acknowledged_at.isoformat() if cmd.acknowledged_at else None,
         }
-

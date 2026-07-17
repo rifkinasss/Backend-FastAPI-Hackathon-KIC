@@ -35,6 +35,8 @@ from app.services.device_service import (
     list_devices,
     set_device_config,
     update_device,
+    provision_device,
+    set_provisioning_status,
 )
 
 
@@ -92,7 +94,50 @@ class DeviceConfigRequest(BaseModel):
     )
 
 
+class DetectedSensor(BaseModel):
+    sensor_code: str = Field(..., min_length=1, max_length=50)
+    gpio_pin: Optional[str] = Field(default=None, max_length=20)
+    i2c_address: Optional[str] = Field(default=None, max_length=10)
+
+
+class ProvisionRequest(BaseModel):
+    hardware_id: str = Field(..., min_length=6, max_length=64)
+    firmware_ver: Optional[str] = Field(default=None, max_length=50)
+    wifi_rssi: Optional[int] = None
+    sensors: list[DetectedSensor] = Field(default_factory=list)
+
+
+class ProvisionStatusRequest(BaseModel):
+    status: str = Field(..., pattern="^(approved|rejected)$")
+
+
 # ── Device CRUD ──────────────────────────────────────────────
+
+
+@router.post("/provision", status_code=201)
+def api_provision_device(payload: ProvisionRequest):
+    """Auto-register a flashed ESP32 by immutable hardware ID."""
+    try:
+        result = provision_device(
+            hardware_id=payload.hardware_id,
+            firmware_ver=payload.firmware_ver,
+            wifi_rssi=payload.wifi_rssi,
+            sensors=[sensor.model_dump() for sensor in payload.sensors],
+        )
+        return {"message": "Device terdeteksi", "data": result}
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.put("/{device_id}/provisioning")
+def api_set_provisioning_status(device_id: str, payload: ProvisionStatusRequest):
+    try:
+        device = set_provisioning_status(device_id, payload.status)
+        return {"message": "Status provisioning diperbarui", "data": device}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("", status_code=201)
@@ -324,4 +369,3 @@ def api_ack_command(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-

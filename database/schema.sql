@@ -78,6 +78,7 @@ $$ LANGUAGE plpgsql;
 CREATE TABLE devices (
     id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
     device_code     VARCHAR(50)     NOT NULL,
+    hardware_id     VARCHAR(64),
     device_name     VARCHAR(150)    NOT NULL,
     location        VARCHAR(200),
     latitude        NUMERIC(10, 7),
@@ -85,10 +86,13 @@ CREATE TABLE devices (
     firmware_ver    VARCHAR(50),
     description     TEXT,
     is_active       BOOLEAN         NOT NULL DEFAULT TRUE,
+    provisioning_status VARCHAR(20) NOT NULL DEFAULT 'approved',
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT uq_devices_code UNIQUE (device_code)
+    CONSTRAINT uq_devices_code UNIQUE (device_code),
+    CONSTRAINT uq_devices_hardware_id UNIQUE (hardware_id),
+    CONSTRAINT chk_devices_provisioning_status CHECK (provisioning_status IN ('pending', 'approved', 'rejected'))
 );
 
 CREATE TRIGGER trg_devices_updated_at
